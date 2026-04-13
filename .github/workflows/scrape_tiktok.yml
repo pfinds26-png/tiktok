@@ -2,7 +2,7 @@ name: TikTok UGC Scraper
 
 on:
   repository_dispatch:
-    types: [scrape_tiktok]   # n8n sends: { "event_type": "scrape_tiktok", "client_payload": { "query": "product name", "run_id": "abc123" } }
+    types: [scrape_tiktok]
 
 jobs:
   scrape:
@@ -27,16 +27,10 @@ jobs:
           QUERY: ${{ github.event.client_payload.query }}
         run: |
           python scrape.py "$QUERY"
-          # scrape.py writes video.mp4 + meta.json to ./output/
 
       - name: Upload video artifact
         uses: actions/upload-artifact@v4
         with:
           name: tiktok-video-${{ github.run_id }}
           path: output/
-          retention-days: 1   # keep artifacts for 1 day only
-
-      # Write run_id to a file so n8n can easily retrieve the artifact
-      - name: Echo run ID
-        run: echo "run_id=${{ github.run_id }}" >> $GITHUB_OUTPUT
-        id: run_id_step
+          retention-days: 1
