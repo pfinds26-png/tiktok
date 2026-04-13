@@ -26,7 +26,7 @@ jobs:
         env:
           QUERY: ${{ github.event.client_payload.query }}
         run: |
-          python scraper/scrape.py "$QUERY"
+          python scrape.py "$QUERY"
           # scrape.py writes video.mp4 + meta.json to ./output/
 
       - name: Upload video artifact
