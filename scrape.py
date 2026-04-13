@@ -2,13 +2,14 @@
 """
 scrape.py
 ─────────
-Searches TikTok for the given query via web search URL,
-picks the first video result, downloads the unwatermarked MP4, and writes:
+Searches DuckDuckGo for a TikTok video matching the given query,
+picks the first video result, downloads the unwatermarked MP4 using yt-dlp, 
+and writes:
   output/video.mp4
   output/meta.json
 
 Usage:
-  python scrape.py "posture corrector"
+  python scrape.py "IP68 Shellbox Waterproof Case For Samsung"
 """
 
 import sys
@@ -17,98 +18,59 @@ import json
 import re
 import urllib.request
 import urllib.parse
-
 import yt_dlp
 
 QUERY = sys.argv[1] if len(sys.argv) > 1 else "trending product"
 OUTPUT_DIR = "output"
 
+# User-Agent for yt-dlp downloading
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
 )
 
-HEADERS = {
-    "User-Agent": USER_AGENT,
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.tiktok.com/",
-}
-
-
-def find_video_url_via_search(query: str) -> dict:
+def find_video_url_via_duckduckgo(query: str) -> dict:
     """
-    Fetch TikTok search results page and extract the first video URL.
-    Returns dict with source_url and title.
+    Bypasses TikTok's search protections by using DuckDuckGo HTML search.
+    Searches for: site:tiktok.com "query"
     """
-    encoded = urllib.parse.quote(query)
-    search_url = f"https://www.tiktok.com/search/video?q={encoded}"
-
-    print(f"[scraper] Fetching search page: {search_url}")
-
-    req = urllib.request.Request(search_url, headers=HEADERS)
+    # Adding 'site:tiktok.com' restricts results to TikTok
+    search_query = f'site:tiktok.com {query}'
+    encoded = urllib.parse.quote(search_query)
+    
+    # Using the HTML-only version of DDG avoids JavaScript requirements
+    url = f"https://html.duckduckgo.com/html/?q={encoded}"
+    
+    print(f"[scraper] Fetching DDG search: {url}")
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=30) as resp:
         html = resp.read().decode("utf-8", errors="ignore")
-
-    # Extract video URLs from the HTML — TikTok embeds them as /@user/video/ID
-    video_ids = re.findall(r'href="(https://www\.tiktok\.com/@[^"]+/video/\d+)', html)
-
-    # Deduplicate while preserving order
-    seen = set()
-    unique_urls = []
-    for url in video_ids:
-        clean = url.split("?")[0]
-        if clean not in seen:
-            seen.add(clean)
-            unique_urls.append(clean)
-
-    if not unique_urls:
+        
+    # Extract direct TikTok video URLs from the raw HTML
+    video_urls = re.findall(r'(https?://(?:www\.)?tiktok\.com/@[^/]+/video/\d+)', html)
+    
+    if not video_urls:
         raise RuntimeError(
-            f"No TikTok video URLs found in search results for: '{query}'. "
-            "TikTok may have blocked the request or changed their HTML structure."
+            f"Could not find any TikTok URLs via DuckDuckGo for: '{query}'. "
+            "Try shortening or simplifying the search terms."
         )
-
-    best_url = unique_urls[0]
-    print(f"[scraper] Found {len(unique_urls)} videos, using: {best_url}")
+        
+    # Get the first unique URL and decode it (DDG sometimes URL-encodes the links)
+    best_url = urllib.parse.unquote(video_urls[0])
+    
+    print(f"[scraper] Found via DDG: {best_url}")
     return {"source_url": best_url, "title": query}
 
 
-def find_video_url_via_ytdlp_search(query: str) -> dict:
-    """
-    Alternative: use yt-dlp's ytsearch on YouTube to find a TikTok-style
-    UGC video if TikTok direct search is blocked.
-    Falls back gracefully.
-    """
-    # Try a direct TikTok search URL as a playlist
-    encoded = urllib.parse.quote(query)
-    search_url = f"https://www.tiktok.com/search/video?q={encoded}"
-
-    opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "extract_flat": True,
-        "playlistend": 5,
-        "user_agent": USER_AGENT,
-        "http_headers": {
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.tiktok.com/",
-        },
-    }
-
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(search_url, download=False)
-
-    entries = [e for e in (info.get("entries") or []) if e and e.get("url")]
-    if not entries:
-        raise RuntimeError(f"yt-dlp found no results at search URL for: {query}")
-
-    best = entries[0]
-    url = best.get("url") or best.get("webpage_url")
-    return {"source_url": url, "title": best.get("title", query)}
-
-
 def download_video(source_url: str, out_dir: str) -> str:
-    """Download unwatermarked MP4 to out_dir/video.mp4."""
+    """Download unwatermarked MP4 to out_dir/video.mp4 using yt-dlp."""
     os.makedirs(out_dir, exist_ok=True)
     out_template = os.path.join(out_dir, "video.%(ext)s")
 
@@ -141,31 +103,29 @@ def download_video(source_url: str, out_dir: str) -> str:
 def main():
     print(f"[scraper] Query: {QUERY}")
 
-    # Try method 1: yt-dlp with TikTok search URL
-    meta = None
+    # 1. Search via DuckDuckGo
     try:
-        meta = find_video_url_via_ytdlp_search(QUERY)
-        print(f"[scraper] Found via yt-dlp search: {meta['source_url']}")
+        meta = find_video_url_via_duckduckgo(QUERY)
     except Exception as e:
-        print(f"[scraper] yt-dlp search failed ({e}), trying HTML scrape...")
+        print(f"[scraper] Search failed. Error: {e}")
+        sys.exit(1)
 
-    # Try method 2: raw HTML scrape of TikTok search page
-    if not meta:
-        try:
-            meta = find_video_url_via_search(QUERY)
-        except Exception as e:
-            raise RuntimeError(f"Both search methods failed. Last error: {e}")
-
+    # 2. Download via yt-dlp
     print(f"[scraper] Downloading: {meta['source_url']}")
-    video_path = download_video(meta["source_url"], OUTPUT_DIR)
-    print(f"[scraper] Downloaded to: {video_path}")
+    try:
+        video_path = download_video(meta["source_url"], OUTPUT_DIR)
+        print(f"[scraper] Downloaded to: {video_path}")
+    except Exception as e:
+        print(f"[scraper] Download failed. Error: {e}")
+        sys.exit(1)
 
+    # 3. Save Metadata
     meta["video_filename"] = "video.mp4"
     meta_path = os.path.join(OUTPUT_DIR, "meta.json")
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2)
 
-    print(f"[scraper] Done. meta.json: {json.dumps(meta, indent=2)}")
+    print(f"[scraper] Done. Saved data to {OUTPUT_DIR}/")
 
 
 if __name__ == "__main__":
